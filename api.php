@@ -1,0 +1,152 @@
+<?php
+$servername = "localhost";
+$username = "root";
+$password = "";
+$database = "csd_system";
+
+if (session_status() == PHP_SESSION_NONE) {
+    session_start();
+}
+
+header('Content-Type: application/json'); // Ensure the response is JSON
+
+function jsonResponse($data) {
+    echo json_encode($data, JSON_NUMERIC_CHECK);
+    exit;
+}
+
+// Establish database connection
+$conn = new mysqli($servername, $username, $password, $database);
+if ($conn->connect_error) {
+    jsonResponse(["status" => 500, "message" => "Database connection failed: " . $conn->connect_error]);
+}
+
+// Handling the "increase" operation
+if (isset($_REQUEST["operation"]) && $_REQUEST["operation"] == "increase") {
+    if (isset($_REQUEST["itemId"])) {
+        $itemId = $_REQUEST["itemId"];
+        $maxValue = $_REQUEST["maxValue"];
+        
+        // Check if the order list exists in the session
+        if (isset($_SESSION["order_list"]) && is_array($_SESSION["order_list"])) {
+            foreach ($_SESSION["order_list"] as $key => $value) {
+                if ($value["itemId"] == $itemId) {
+                    if ($_SESSION["order_list"][$key]["selected_quantity"] >= $maxValue) {
+                        jsonResponse(["status" => 400, "message" => "Maximum quantity reached"]);
+                    }
+
+                    $_SESSION["order_list"][$key]["selected_quantity"] += 1;
+                    $response = [
+                        "status" => 200,
+                        "id" => $itemId,
+                        "price" => intval($_SESSION["order_list"][$key]["price"]),
+                        "quantity" => $_SESSION["order_list"][$key]["selected_quantity"]
+                    ];
+                    jsonResponse($response);
+                }
+            }
+        }
+        jsonResponse(["status" => 404, "message" => "Item not found in order list"]);
+    }
+}
+
+
+// Handle the "decrease" operation
+if (isset($_REQUEST["operation"]) && $_REQUEST["operation"] == "decrease") {
+    if (isset($_REQUEST["itemId"])) {
+        $itemId = $_REQUEST["itemId"];
+
+        // Check if the order list exists in the session
+        if (isset($_SESSION["order_list"]) && is_array($_SESSION["order_list"])) {
+            foreach ($_SESSION["order_list"] as $key => $value) {
+                if ($value["itemId"] == $itemId) {
+                    if ($_SESSION["order_list"][$key]["selected_quantity"] <= 1) {
+                        jsonResponse(["status" => 400, "message" => "Cannot decrease below 1"]);
+                    }
+
+                    $_SESSION["order_list"][$key]["selected_quantity"] -= 1;
+                    $response = [
+                        "status" => 200,
+                        "id" => $itemId,
+                        "price" => intval($_SESSION["order_list"][$key]["price"]),
+                        "quantity" => $_SESSION["order_list"][$key]["selected_quantity"]
+                    ];
+                    jsonResponse($response);
+                }
+            }
+        }
+        jsonResponse(["status" => 404, "message" => "Item not found in order list"]);
+    }
+}
+
+
+
+
+// Determine the start date based on the current month
+$current_month = (int)date('m');
+$start_date = $current_month % 2 == 0 ? date('Y-m-01', strtotime('first day of -1 month')) : date('Y-m-01');
+
+
+// handling the "stock" operation.
+if (isset($_REQUEST["operation"]) && $_REQUEST["operation"] == "stock") {
+    if (isset($_REQUEST["itemId"])) {
+        $itemId = $_REQUEST["itemId"];
+        
+        $query = "SELECT itemId, stock_quantity FROM items WHERE itemId = ?";
+        $stmt = $conn->prepare($query);
+        if ($stmt === false) {
+            jsonResponse(["status" => 500, "message" => "Prepare failed: " . $conn->error]);
+        }
+
+        $stmt->bind_param("i", $itemId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        if ($result === false) {
+            jsonResponse(["status" => 500, "message" => "Get result failed: " . $stmt->error]);
+        }
+
+        $row = $result->fetch_assoc();
+        if ($row) {
+            jsonResponse(["status" => 200, "stock_quantity" => $row["stock_quantity"]]);
+        } else {
+            jsonResponse(["status" => 404, "message" => "Item not found"]);
+        }
+    }
+}
+
+// Fetch the user's order data based on the date range and status
+$total_items = 0;
+$total_price = 0;
+$user_id = $_SESSION['user_id'] ?? null;
+
+if ($user_id) {
+    $query = "SELECT i.itemId, SUM(od.quantity) AS total_quantity, i.stock_quantity
+              FROM orders o
+              JOIN order_details od ON od.order_id = o.order_id
+              JOIN items i ON i.itemId = od.item_id
+              WHERE o.date_and_time BETWEEN ? AND NOW() AND o.user_id = ? AND o.status = 2 
+              GROUP BY i.itemId, i.stock_quantity";
+
+    $stmt = $conn->prepare($query);
+    if ($stmt === false) {
+        jsonResponse(["status" => 500, "message" => "Prepare failed: " . $conn->error]);
+    }
+
+    $stmt->bind_param("si", $start_date, $user_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if ($result === false) {
+        jsonResponse(["status" => 500, "message" => "Get result failed: " . $stmt->error]);
+    }
+
+    $arr = [];
+    while ($row = $result->fetch_assoc()) {
+        $arr[$row['itemId']] = min($row['total_quantity'], $row['stock_quantity']);
+    }
+
+    jsonResponse($arr);
+}
+
+$stmt->close();
+$conn->close();
+?>
